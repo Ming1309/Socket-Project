@@ -10,48 +10,110 @@ logging.basicConfig(level=logging.INFO)
 HOST = socket.gethostbyname(socket.gethostname())
 PORT = 8080
 
-FILE_LIST_PATH = "file_list.json"
+FILE_LIST = "file_list.json"
+FILE_DIRECTORY = "files"
+# Chunk 
 CHUNK_SIZE = 1024 * 1024  
-
+MAX_CHUNK_SIZE = 4 * 1024 * 1024
 
 def load_file_list():
-    with open(FILE_LIST_PATH, 'r') as file:
-        return json.load(file)
+    """Load the list of available files from a JSON file."""
+    if not os.path.exists(FILE_LIST):
+        logging.error(f"{FILE_LIST} not found. Exiting...")
+        return {}
+    try:
+        with open(FILE_LIST, 'r') as file:
+            return json.load(file)
+    except json.JSONDecodeError:
+        logging.error(f"Error decoding {FILE_LIST}. Exiting...")
+        return {}
 
 def send_file(client_socket, file_name, offset, chunk_size):
+    """Send the requested file chunk to the client."""
     try:
-        file_path = os.path.join("file_list", file_name)  
+        file_path = os.path.join(FILE_DIRECTORY, file_name)
+        # Validate file existence
+        if not os.path.exists(file_path):
+            client_socket.sendall(b"File not found")
+            return
+
+        # Validate offset
+        file_size = os.path.getsize(file_path)
+        if offset >= file_size:
+            client_socket.sendall(b"Offset exceeds file size")
+            return
+
+        # Enforce maximum chunk size
+        chunk_size = min(chunk_size, MAX_CHUNK_SIZE)
+
+        # Send the file chunk
         with open(file_path, 'rb') as file:
             file.seek(offset)
-            while True:
-                data = file.read(chunk_size)
+            bytes_sent = 0
+            while bytes_sent < chunk_size:
+                data = file.read(min(chunk_size - bytes_sent, CHUNK_SIZE))
                 if not data:
                     break
                 client_socket.sendall(data)
+                bytes_sent += len(data)
                 logging.info(f"Sent {len(data)} bytes of {file_name} from offset {offset}")
                 offset += len(data)
     except Exception as e:
         logging.error(f"Error sending file {file_name}: {e}")
 
 def handle_client(client_socket, addr, file_list):
+    """Handle individual client requests."""
     try:
+        logging.info(f"Connection from {addr}")
         request = client_socket.recv(1024).decode()
-        request_data = json.loads(request)
-        file_name = request_data['file_name']
-        offset = request_data['offset']
-        chunk_size = request_data.get('chunk_size', CHUNK_SIZE)
 
-        if file_name in file_list:
-            send_file(client_socket, file_name, offset, chunk_size)
+        try:
+            request_data = json.loads(request)
+        except json.JSONDecodeError:
+            client_socket.sendall(b"Invalid JSON format")
+            return
+
+        # Validate protocol fields
+        if 'file_name' not in request_data:
+            client_socket.sendall(b"Invalid request format")
+            return
+
+        file_name = request_data['file_name']
+
+        if 'action' in request_data and request_data['action'] == 'size':
+            # Handle file size request
+            file_path = os.path.join(FILE_DIRECTORY, file_name)
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+                client_socket.sendall(str(file_size).encode())
+            else:
+                client_socket.sendall(b"File not found")
         else:
-            client_socket.sendall(b"File not found")
+            # Handle file chunk request
+            if 'offset' not in request_data:
+                client_socket.sendall(b"Invalid request format")
+                return
+
+            offset = request_data['offset']
+            chunk_size = request_data.get('chunk_size', CHUNK_SIZE)
+
+            # Process file request
+            if file_name in file_list:
+                send_file(client_socket, file_name, offset, chunk_size)
+            else:
+                client_socket.sendall(b"File not found")
     except Exception as e:
         logging.error(f"Error handling client {addr}: {e}")
     finally:
         client_socket.close()
+        logging.info(f"Connection to {addr} closed")
 
 def start_server():
+    """Start the file server."""
     file_list = load_file_list()
+    if not file_list:
+        logging.error("No files available to serve. Exiting...")
+        return
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.bind((HOST, PORT))
