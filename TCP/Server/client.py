@@ -13,6 +13,28 @@ DOWNLOAD_FOLDER = 'downloads'
 # Tập hợp lưu trữ các file không tồn tại
 non_existent_files = set()
 
+def list_files():
+    """Retrieve the list of available files from the server and display this information."""
+    try:
+        # Tạo socket TCP và kết nối tới server
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+            client_socket.connect((SERVER_HOST, SERVER_PORT))
+            
+            # Gửi lệnh "LIST" đến server
+            client_socket.sendall(b"LIST")
+            
+            # Nhận phản hồi từ server
+            response = client_socket.recv(BUFFER_SIZE).decode()
+            
+            # Hiển thị danh sách file nhận được
+            print("Available files on the server:")
+            if response:
+                print(response)
+            else:
+                print("No files available.")
+    except Exception as e:
+        print(f"Error retrieving file list: {e}")
+
 # Hàm tải một chunk
 def download_chunk(filename, offset, chunk_size, progress):
     try:
@@ -131,6 +153,9 @@ def process_input_file():
 # Chương trình chính
 if __name__ == "__main__":
     print("Client bắt đầu hoạt động...")
+    print("Client Program - File List")
+    print("==========================")
+    list_files()
     try:
         process_input_file()
     except KeyboardInterrupt:
