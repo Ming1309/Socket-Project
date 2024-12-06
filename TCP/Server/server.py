@@ -8,19 +8,20 @@ import json
 logging.basicConfig(level=logging.INFO)
 
 HOST = socket.gethostbyname(socket.gethostname())
-PORT = 8080
+PORT = 65432
 
 FILE_LIST = "file_list.json"
 FILE_DIRECTORY = "files"
-# Chunk 
 CHUNK_SIZE = 1024 * 1024  
 MAX_CHUNK_SIZE = 4 * 1024 * 1024
 
 def load_file_list():
     """Load the list of available files from a JSON file."""
+    # Check if the file specified by FILE_LIST is exists. If it does not, logs an error message and return empty
     if not os.path.exists(FILE_LIST):
         logging.error(f"{FILE_LIST} not found. Exiting...")
         return {}
+    # Open the file in read mode then tries to load the contents of the file
     try:
         with open(FILE_LIST, 'r') as file:
             return json.load(file)
@@ -31,18 +32,20 @@ def load_file_list():
 def send_file(client_socket, file_name, offset, chunk_size):
     """Send the requested file chunk to the client."""
     try:
+        # Construct the file path
         file_path = os.path.join(FILE_DIRECTORY, file_name)
+
         # Validate file existence
         if not os.path.exists(file_path):
             client_socket.sendall(b"File not found")
             return
-
+        
         # Validate offset
         file_size = os.path.getsize(file_path)
         if offset >= file_size:
             client_socket.sendall(b"Offset exceeds file size")
             return
-
+        
         # Enforce maximum chunk size
         chunk_size = min(chunk_size, MAX_CHUNK_SIZE)
 
