@@ -1,8 +1,7 @@
-import os
 import socket
-import threading
 import logging
-import json
+import threading
+import os
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -10,124 +9,132 @@ logging.basicConfig(level=logging.INFO)
 HOST = socket.gethostbyname(socket.gethostname())
 PORT = 65432
 
-FILE_LIST = "file_list.json"
-FILE_DIRECTORY = "files"
-CHUNK_SIZE = 1024 * 1024  
-MAX_CHUNK_SIZE = 4 * 1024 * 1024
+# Đường dẫn file text lưu danh sách file
+FILE_LIST_PATH = "file_list.txt"
+SERVER_FILES_DIR = "files"
 
 def load_file_list():
-    """Load the list of available files from a JSON file."""
-    # Check if the file specified by FILE_LIST is exists. If it does not, logs an error message and return empty
-    if not os.path.exists(FILE_LIST):
-        logging.error(f"{FILE_LIST} not found. Exiting...")
+    """Load the list of available files from a TXT file."""
+    if not os.path.exists(FILE_LIST_PATH):
+        logging.error(f"{FILE_LIST_PATH} not found. Exiting...")
         return {}
-    # Open the file in read mode then tries to load the contents of the file
+    file_list = {}
+    with open(FILE_LIST_PATH, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) == 2:
+                file_name, file_size = parts
+                try:
+                    file_list[file_name] = int(file_size)
+                except ValueError:
+                    logging.warning(f"Skipping line due to invalid file size: {line.strip()}")
+                    continue
+    return file_list
+
+
+def send_chunk(client_socket, file_path, offset, chunk_size):
+    """Send a chunk of data from a file to a client over a socket connection."""
     try:
-        with open(FILE_LIST, 'r') as file:
-            return json.load(file)
-    except json.JSONDecodeError:
-        logging.error(f"Error decoding {FILE_LIST}. Exiting...")
-        return {}
+        with open(file_path, "rb") as f:
+            f.seek(offset)
+            data = f.read(chunk_size)
 
-def send_file(client_socket, file_name, offset, chunk_size):
-    """Send the requested file chunk to the client."""
-    try:
-        # Construct the file path
-        file_path = os.path.join(FILE_DIRECTORY, file_name)
-
-        # Validate file existence
-        if not os.path.exists(file_path):
-            client_socket.sendall(b"File not found")
-            return
-        
-        # Validate offset
-        file_size = os.path.getsize(file_path)
-        if offset >= file_size:
-            client_socket.sendall(b"Offset exceeds file size")
-            return
-        
-        # Enforce maximum chunk size
-        chunk_size = min(chunk_size, MAX_CHUNK_SIZE)
-
-        # Send the file chunk
-        with open(file_path, 'rb') as file:
-            file.seek(offset)
-            bytes_sent = 0
-            while bytes_sent < chunk_size:
-                data = file.read(min(chunk_size - bytes_sent, CHUNK_SIZE))
-                if not data:
-                    break
-                client_socket.sendall(data)
-                bytes_sent += len(data)
-                logging.info(f"Sent {len(data)} bytes of {file_name} from offset {offset}")
-                offset += len(data)
+        # Prepare and send header and data
+        header = f"{offset}:{len(data)}\n".encode()
+        client_socket.sendall(header + data)
     except Exception as e:
-        logging.error(f"Error sending file {file_name}: {e}")
-
-def handle_client(client_socket, addr, file_list):
-    """Handle individual client requests."""
-    try:
-        logging.info(f"Connection from {addr}")
-        request = client_socket.recv(1024).decode()
-
+        logging.error(f"Error sending chunk: {e}")
         try:
-            request_data = json.loads(request)
-        except json.JSONDecodeError:
-            client_socket.sendall(b"Invalid JSON format")
-            return
+            client_socket.sendall(b"ERROR: Unable to send chunk")
+        except Exception as send_error:
+            logging.error(f"Error sending error message to client: {send_error}")
 
-        # Validate protocol fields
-        if 'file_name' not in request_data:
-            client_socket.sendall(b"Invalid request format")
-            return
+def handle_client(client_socket, address):
+    """Handle requests from a client."""
+    logging.info(f"Handling client {address}")
+    file_list = load_file_list()
+    try:
+        while True:
+            try:
+                request = client_socket.recv(1024).decode()
+                if not request:
+                    break
 
-        file_name = request_data['file_name']
+                logging.info(f"Received request: {request}")
 
-        if 'action' in request_data and request_data['action'] == 'size':
-            # Handle file size request
-            file_path = os.path.join(FILE_DIRECTORY, file_name)
-            if os.path.exists(file_path):
-                file_size = os.path.getsize(file_path)
-                client_socket.sendall(str(file_size).encode())
-            else:
-                client_socket.sendall(b"File not found")
-        else:
-            # Handle file chunk request
-            if 'offset' not in request_data:
-                client_socket.sendall(b"Invalid request format")
-                return
+                if request == "LIST":
+                    response = "\n".join([f"{name} {size}" for name, size in file_list.items()])
+                    client_socket.sendall(response.encode())
+                    logging.info("Sent file list to client")
 
-            offset = request_data['offset']
-            chunk_size = request_data.get('chunk_size', CHUNK_SIZE)
+                elif request.startswith("DOWNLOAD"):
+                    try:
+                        _, file_name, offset, chunk_size = request.split(":")
+                        offset = int(offset)
+                        chunk_size = int(chunk_size)
 
-            # Process file request
-            if file_name in file_list:
-                send_file(client_socket, file_name, offset, chunk_size)
-            else:
-                client_socket.sendall(b"File not found")
+                        file_path = os.path.join(SERVER_FILES_DIR, file_name)
+                        if not os.path.exists(file_path):
+                            client_socket.sendall(b"ERROR: File not found")
+                            logging.warning(f"File not found: {file_path}")
+                            continue
+
+                        send_chunk(client_socket, file_path, offset, chunk_size)
+                        logging.info(f"Sent chunk of file {file_name} to client")
+                    except ValueError:
+                        client_socket.sendall(b"ERROR: Invalid request format")
+                        logging.error("Invalid request format")
+                else:
+                    client_socket.sendall(b"ERROR: Unknown request")
+                    logging.error("Unknown request")
+            except socket.error as e:
+                if e.errno == 54:  # Connection reset by peer
+                    logging.error(f"Connection reset by peer: {address}")
+                    break
+                else:
+                    raise
     except Exception as e:
-        logging.error(f"Error handling client {addr}: {e}")
+        logging.error(f"Error handling client {address}: {e}")
     finally:
-        client_socket.close()
-        logging.info(f"Connection to {addr} closed")
+        try:
+            client_socket.close()
+            logging.info(f"Closed connection to client {address}")
+        except Exception as close_error:
+            logging.error(f"Error closing client socket for {address}: {close_error}")
 
 def start_server():
-    """Start the file server."""
-    file_list = load_file_list()
-    if not file_list:
-        logging.error("No files available to serve. Exiting...")
-        return
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((HOST, PORT))
-            s.listen()
-            logging.info(f"Server listening on {HOST}:{PORT}")
-            while True:
-                conn, addr = s.accept()
-                client_thread = threading.Thread(target=handle_client, args=(conn, addr, file_list))
-                client_thread.start()
-        except socket.error as e:
-            logging.error(f"Socket error: {e}")
+    """Start the server to handle client connections."""
+    if not os.path.exists(SERVER_FILES_DIR):
+        os.makedirs(SERVER_FILES_DIR)
+
+    file_list = {}
+    for file_name in os.listdir(SERVER_FILES_DIR):
+        file_path = os.path.join(SERVER_FILES_DIR, file_name)
+        if os.path.isfile(file_path):
+            file_list[file_name] = os.path.getsize(file_path)
+
+    # Update the file list in the text file
+    with open(FILE_LIST_PATH, "w") as f:
+        for file_name, file_size in file_list.items():
+            f.write(f"{file_name} {file_size}\n")
+
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((HOST, PORT))
+        server_socket.listen(5)
+        logging.info(f"Server listening on {HOST}:{PORT}")
+
+        while True:
+            client_socket, address = server_socket.accept()
+            logging.info(f"Connection from {address}")
+            threading.Thread(target=handle_client, args=(client_socket, address)).start()
+    except KeyboardInterrupt:
+        logging.info("Server interrupted by user")
+    except Exception as e:
+        logging.error(f"Error in server: {e}")
+    finally:
+        server_socket.close()
+        logging.info("Server socket closed")
 
 if __name__ == "__main__":
     start_server()
