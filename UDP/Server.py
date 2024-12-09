@@ -1,78 +1,82 @@
-﻿import socket
-import struct
+import socket
 import os
+import logging
 
-CHUNK_SIZE = 1024  # Kích thước mỗi chunk
+# Cấu hình server
+HOST = "127.0.0.1"
+PORT = 65432
+SERVER_FILES_DIR = "files"
+BUFFER_SIZE = 4096
 
+# Thiết lập logging
+logging.basicConfig(level=logging.INFO)
 
-def calculate_checksum(data):
-    """Tính checksum đơn giản bằng tổng các byte"""
-    return sum(data) % 256
+def load_file_list():
+    """Tải danh sách file từ thư mục files."""
+    if not os.path.exists(SERVER_FILES_DIR):
+        os.makedirs(SERVER_FILES_DIR)
+    file_list = {}
+    for file_name in os.listdir(SERVER_FILES_DIR):
+        file_path = os.path.join(SERVER_FILES_DIR, file_name)
+        if os.path.isfile(file_path):
+            file_list[file_name] = os.path.getsize(file_path)
+    return file_list
 
+def handle_request(data, addr, server_socket, file_list):
+    """Xử lý yêu cầu từ client."""
+    message = data.decode()
+    logging.info(f"Yêu cầu từ {addr}: {message}")
 
-def udp_server(server_host='localhost', server_port=12345):
+    if message == "LIST":
+        # Gửi danh sách file
+        response = "\n".join([f"{name} {size}" for name, size in file_list.items()])
+        server_socket.sendto(response.encode(), addr)
+    elif message.startswith("DOWNLOAD"):
+        try:
+            _, file_name, offset, chunk_size = message.split(":")
+            offset = int(offset)
+            chunk_size = int(chunk_size)
+
+            if file_name in file_list:
+                file_path = os.path.join(SERVER_FILES_DIR, file_name)
+                with open(file_path, "rb") as f:
+                    f.seek(offset)
+                    data = f.read(chunk_size)
+
+                # Chia nhỏ dữ liệu thành các gói UDP nhỏ hơn
+                packet_size = 1024  # Kích thước mỗi gói (bytes)
+                total_packets = (len(data) + packet_size - 1) // packet_size
+
+                for i in range(total_packets):
+                    start = i * packet_size
+                    end = min(start + packet_size, len(data))
+                    packet = data[start:end]
+                    server_socket.sendto(packet, addr)
+            else:
+                server_socket.sendto(b"ERROR: File not found", addr)
+        except Exception as e:
+            logging.error(f"Lỗi xử lý yêu cầu tải: {e}")
+            server_socket.sendto(b"ERROR: Invalid request format", addr)
+    else:
+        server_socket.sendto(b"ERROR: Unknown command", addr)
+
+def start_server():
+    """Chạy server."""
+    file_list = load_file_list()
+
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_socket.bind((server_host, server_port))
-    print(f"Server đang chạy tại {server_host}:{server_port}")
-
-    allowed_client_addr = None  # Chỉ phục vụ duy nhất một client
+    server_socket.bind((HOST, PORT))
+    logging.info(f"Server đang chạy tại {HOST}:{PORT}")
 
     while True:
         try:
-            # Nhận yêu cầu từ client
-            data, client_addr = server_socket.recvfrom(1024)
-            if allowed_client_addr is None:  # Chấp nhận client đầu tiên
-                allowed_client_addr = client_addr
-                print(f"Kết nối với client: {allowed_client_addr}")
-            elif client_addr != allowed_client_addr:
-                print(f"Client {client_addr} không được phép, bỏ qua.")
-                continue
-
-            file_name = data.decode().strip()
-            print(f"Client yêu cầu tải file: {file_name}")
-
-            if not os.path.exists(file_name):
-                print(f"File {file_name} không tồn tại.")
-                server_socket.sendto(b"ERROR: File not found", client_addr)
-                continue
-
-            # Gửi file cho client
-            with open(file_name, "rb") as file:
-                chunk_id = 0
-                while True:
-                    chunk = file.read(CHUNK_SIZE)
-                    if not chunk:
-                        # Gửi tín hiệu kết thúc
-                        print("Đã gửi xong file, gửi tín hiệu kết thúc.")
-                        end_packet = struct.pack("!I B", -1, 0)
-                        server_socket.sendto(end_packet, client_addr)
-                        break
-
-                    checksum = calculate_checksum(chunk)
-                    packet = struct.pack("!I B", chunk_id, checksum) + chunk
-                    server_socket.sendto(packet, client_addr)
-
-                    print(f"Đã gửi chunk {chunk_id}, chờ ACK...")
-                    try:
-                        ack_data, _ = server_socket.recvfrom(1024)
-                        ack_chunk_id, ack_status = struct.unpack("!I B", ack_data)
-
-                        if ack_status == 1 and ack_chunk_id == chunk_id:
-                            print(f"ACK nhận thành công cho chunk {chunk_id}")
-                            chunk_id += 1
-                        else:
-                            print(f"ACK lỗi hoặc không đúng chunk, gửi lại chunk {chunk_id}")
-                    except socket.timeout:
-                        print(f"Timeout, gửi lại chunk {chunk_id}")
-                        continue
-
-        except Exception as e:
-            print(f"Lỗi server: {e}")
+            data, addr = server_socket.recvfrom(BUFFER_SIZE)
+            handle_request(data, addr, server_socket, file_list)
+        except KeyboardInterrupt:
+            logging.info("Đóng server.")
             break
-
-    server_socket.close()
-
+        except Exception as e:
+            logging.error(f"Lỗi trong server: {e}")
 
 if __name__ == "__main__":
-    udp_server()
-
+    start_server()
