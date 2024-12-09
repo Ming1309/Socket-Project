@@ -1,69 +1,98 @@
-﻿import socket
-import struct
+import socket
 import os
+import threading
 
-CHUNK_SIZE = 1024  # Kích thước mỗi chunk
+# Cấu hình client
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 65432
+BUFFER_SIZE = 4096
+DOWNLOAD_FOLDER = "downloads"
+INPUT_FILE = "input.txt"
+
+def download_chunk(filename, part_num, offset, chunk_size):
+    """Tải một phần dữ liệu của file."""
+    try:
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        request = f"DOWNLOAD:{filename}:{offset}:{chunk_size}"
+        client_socket.sendto(request.encode(), (SERVER_HOST, SERVER_PORT))
+
+        # Nhận dữ liệu từ server
+        received_data = bytearray()
+        while len(received_data) < chunk_size:
+            packet, _ = client_socket.recvfrom(BUFFER_SIZE)
+            received_data.extend(packet)
+
+        # Lưu dữ liệu vào file tạm
+        temp_file = os.path.join(DOWNLOAD_FOLDER, f"{filename}.part{part_num}")
+        with open(temp_file, "wb") as f:
+            f.write(received_data)
+    except Exception as e:
+        print(f"Lỗi tải phần {part_num} của file {filename}: {e}")
+    finally:
+        client_socket.close()
 
 
-def calculate_checksum(data):
-    """Tính checksum đơn giản bằng tổng các byte"""
-    return sum(data) % 256
+def download_file(filename, file_size):
+    """Tải file từ server."""
+    print(f"Đang tải: {filename} ({file_size} bytes)")
 
+    # Tạo thư mục tải xuống nếu chưa tồn tại
+    os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def udp_client(server_host='localhost', server_port=12345):
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client_socket.settimeout(2)  # Timeout để nhận gói tin
-    server_addr = (server_host, server_port)
+    # Chia file thành 4 phần
+    chunk_size = file_size // 4
+    threads = []
 
-    file_name = input("Nhập tên file cần tải: ").strip()
-    if not file_name:
-        print("Tên file không được để trống.")
-        return
+    for i in range(4):
+        offset = i * chunk_size
+        size = chunk_size if i < 3 else file_size - offset  # Phần cuối nhận số byte còn lại
+        thread = threading.Thread(target=download_chunk, args=(filename, i, offset, size))
+        threads.append(thread)
+        thread.start()
 
-    # Gửi yêu cầu file
-    client_socket.sendto(file_name.encode(), server_addr)
+    # Chờ tất cả các phần tải xong
+    for thread in threads:
+        thread.join()
 
-    # Tạo file rỗng để ghi dữ liệu
-    if os.path.exists(file_name):
-        os.remove(file_name)  # Xóa file cũ nếu tồn tại
-    open(file_name, "wb").close()
+    # Ghép các phần lại thành file hoàn chỉnh
+    output_file = os.path.join(DOWNLOAD_FOLDER, filename)
+    with open(output_file, "wb") as outfile:
+        for i in range(4):
+            temp_file = os.path.join(DOWNLOAD_FOLDER, f"{filename}.part{i}")
+            with open(temp_file, "rb") as infile:
+                outfile.write(infile.read())
+            os.remove(temp_file)
 
-    # Nhận file từ server
-    chunk_id = 0
+    print(f"Tải xong: {filename}")
+
+def process_input_file():
+    """Đọc file input.txt và tải các file yêu cầu."""
     while True:
         try:
-            packet, _ = client_socket.recvfrom(1024 + 10)
-            header_size = struct.calcsize("!I B")
-            received_chunk_id, checksum = struct.unpack("!I B", packet[:header_size])
-            chunk = packet[header_size:]
+            with open(INPUT_FILE, "r") as f:
+                files_to_download = [line.strip() for line in f.readlines()]
+        except FileNotFoundError:
+            files_to_download = []
 
-            # Nếu nhận tín hiệu kết thúc
-            if received_chunk_id == -1:
-                print("Đã nhận đủ file, kết thúc.")
-                break
+        for filename in files_to_download:
+            # Gửi yêu cầu danh sách file
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            client_socket.sendto(b"LIST", (SERVER_HOST, SERVER_PORT))
+            response, _ = client_socket.recvfrom(BUFFER_SIZE)
+            client_socket.close()
 
-            # Kiểm tra checksum
-            if calculate_checksum(chunk) == checksum and received_chunk_id == chunk_id:
-                # Ghi dữ liệu hợp lệ vào file
-                with open(file_name, "ab") as file:
-                    file.write(chunk)
-                print(f"Nhận chunk {received_chunk_id} thành công!")
+            # Kiểm tra file có tồn tại không
+            available_files = response.decode().split("\n")
+            file_info = next((file for file in available_files if file.startswith(filename)), None)
 
-                # Gửi ACK
-                ack = struct.pack("!I B", received_chunk_id, 1)
-                client_socket.sendto(ack, server_addr)
-                chunk_id += 1
+            if file_info:
+                _, file_size = file_info.split()
+                download_file(filename, int(file_size))
             else:
-                print(f"Chunk {received_chunk_id} lỗi checksum hoặc không đúng thứ tự!")
-                nack = struct.pack("!I B", received_chunk_id, 0)
-                client_socket.sendto(nack, server_addr)
-
-        except socket.timeout:
-            print("Timeout khi nhận chunk mới, kết thúc.")
-            break
-
-    client_socket.close()
-
+                print(f"File {filename} không tồn tại trên server.")
+        
+        break  # Thực hiện tải một lần rồi dừng
 
 if __name__ == "__main__":
-    udp_client()
+    print("Client đang hoạt động...")
+    process_input_file()
