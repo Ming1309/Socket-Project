@@ -9,7 +9,6 @@ logging.basicConfig(level=logging.INFO)
 HOST = socket.gethostbyname(socket.gethostname())
 PORT = 65432
 
-# Đường dẫn file text lưu danh sách file
 FILE_LIST_PATH = "file_list.txt"
 SERVER_FILES_DIR = "files"
 
