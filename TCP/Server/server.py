@@ -8,7 +8,7 @@ import hashlib
 logging.basicConfig(level=logging.INFO)
 
 # Server configuration
-HOST = '0.0.0.0'
+HOST = '127.0.0.1'
 PORT = 12345
 
 FILE_LIST_PATH = "file_list.txt"
