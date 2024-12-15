@@ -5,6 +5,7 @@ import hashlib
 import threading
 import json 
 import time 
+from tqdm import tqdm  
 
 
 # Cấu hình client
@@ -70,24 +71,28 @@ def download_chunk(filename, chunk_id, offset, chunk_size, server_port):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client_socket.settimeout(TIMEOUT)
     server_address = (SERVER_HOST, server_port)
-    seq_num = offset 
-    conditionStop = offset + chunk_size #sửa chỗ này 
+    seq_num = offset
+    conditionStop = offset + chunk_size  # Sửa chỗ này
+    progress_bar = tqdm(total=chunk_size, desc=f"Chunk {chunk_id}", unit="B", unit_scale=True, leave=False)
+
     try:
         with open(f"{DOWNLOAD_FOLDER}/{filename}_part_{chunk_id}", "wb") as file:
             while offset < conditionStop:
-                part_size = min(1024, conditionStop  - offset)
+                part_size = min(1024, conditionStop - offset)
                 request = f"DOWNLOAD|{filename}|{offset}|{part_size}|{seq_num}|{chunk_id}".encode()
                 client_socket.sendto(request, server_address)
+
                 try:
                     response, _ = client_socket.recvfrom(BUFFER_SIZE)
                     packet = ReliablePacket.deserialize(response)
-                    logging.info(f"Client received chunk_id={packet.chunk_id}, seq_num={packet.seq_num}")
+                    #logging.info(f"Client received chunk_id={packet.chunk_id}, seq_num={packet.seq_num}")
                     if packet.chunk_id == chunk_id and packet.seq_num == seq_num:
                         if packet.checksum == generate_checksum(packet.data):
                             file.write(packet.data)
                             client_socket.sendto(f"ACK_{chunk_id}_{seq_num}".encode(), server_address)
                             seq_num += 1
                             offset += part_size
+                            progress_bar.update(part_size)  # Cập nhật tiến trình
                         else:
                             logging.warning(f"Checksum mismatch for chunk {chunk_id}, seq_num {seq_num}")
                             client_socket.sendto(f"NACK_{chunk_id}_{seq_num}".encode(), server_address)
@@ -96,6 +101,7 @@ def download_chunk(filename, chunk_id, offset, chunk_size, server_port):
     except Exception as e:
         logging.error(f"Error in download_chunk: {e}")
     finally:
+        progress_bar.close()  # Đóng thanh tiến trình
         client_socket.close()
 
 def download_file(file_list, filename):
@@ -204,7 +210,7 @@ def main():
             for filename in files_to_download:
                 # Nếu tệp đã tải, bỏ qua
                 if filename in downloaded_files:
-                    logging.info(f"File {filename} đã được tải trước đó. Bỏ qua.")
+                    #logging.info(f"File {filename} đã được tải trước đó. Bỏ qua.")
                     continue
                 
                 # Nếu tệp có trong danh sách server, tiến hành tải
