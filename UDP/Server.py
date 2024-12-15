@@ -1,127 +1,195 @@
-# Server.py
-import socket
+import socket 
 import os
-import logging
 import hashlib
-import time
+import json
+import logging
 import threading 
-# Cấu hình server
-HOST = "127.0.0.1"
-PORT = 65432
-SERVER_FILES_DIR = "files"
-BUFFER_SIZE = 8192
-MAX_RETRIES = 15
-PACKET_SIZE = 1400
 
-# Thiết lập logging
+# Cấu hình cho server
+HOST = "127.0.0.1"  # Địa chỉ IP của server
+PORTS = [54000, 55000, 56000, 57000]  # Danh sách các cổng
+BUFFER_SIZE = 65535  # Giới hạn tối đa cho một gói UDP
+FILE_LIST_PATH = "file_list.txt"  # Đường dẫn tới file chứa danh sách tệp
+FILES_DIR = "files"  # Thư mục chứa các tệp
+MAX_RETRIES = 15  # Số lần thử lại tối đa
+TIMEOUT = 2  # Thời gian chờ tối đa trong giây
+
+# Cấu hình logging để ghi lại thông tin hoạt động của server
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Hàm tải danh sách tệp từ file "file_list.txt"
 def load_file_list():
-    """Tải danh sách file từ thư mục files."""
-    if not os.path.exists(SERVER_FILES_DIR):
-        os.makedirs(SERVER_FILES_DIR)
-        logging.info(f"Thư mục {SERVER_FILES_DIR} đã được tạo.")
-
     file_list = {}
-    for file_name in os.listdir(SERVER_FILES_DIR):
-        file_path = os.path.join(SERVER_FILES_DIR, file_name)
-        if os.path.isfile(file_path):
-            with open(file_path, 'rb') as f:
-                file_hash = hashlib.md5(f.read()).hexdigest()
-            file_list[file_name] = {
-                'size': os.path.getsize(file_path),
-                'checksum': file_hash
-            }
-            logging.info(f"Tìm thấy file: {file_name}, kích thước: {file_list[file_name]['size']} bytes")
+    try:
+        with open(FILE_LIST_PATH, "r") as f:
+            for line in f.readlines():
+                name, size = line.strip().split()  # Tách tên tệp và kích thước
+                file_list[name] = int(size)
+        logging.info(f"Loaded file list: {file_list}")
+    except FileNotFoundError:
+        logging.error("File list not found.")
     return file_list
 
-def send_packet_with_ack(server_socket, packet, addr, seq):
-    """Gửi một packet và đảm bảo nhận được ACK."""
-    for attempt in range(MAX_RETRIES):
-        try:
-            server_socket.sendto(packet, addr)
-            #logging.info(f"Sent packet {seq} to {addr}, waiting for ACK")
-            #logging.info(f"Received ACK {ack.decode()} from {addr}")
+# Tải danh sách tệp khi server khởi động
+file_list = load_file_list()
 
-            server_socket.settimeout(5)
-            ack, _ = server_socket.recvfrom(BUFFER_SIZE)
-            #logging.info(f"Sent packet {seq} to {addr}, waiting for ACK")
-            #logging.info(f"Received ACK {ack.decode()} from {addr}")
+#Hàm tính checksum 
+def generate_checksum(data):
+    """Sinh checksum bằng SHA-256"""
+    sha256 = hashlib.sha256()
+    sha256.update(data)
+    return sha256.hexdigest()
 
-            if ack.decode() == f"ACK:{seq}":
-                return True
-        except socket.timeout:
-            logging.warning(f"Retry sending packet {seq}, attempt {attempt + 1}")
-    return False
+class ReliablePacket:
+    def __init__(self, chunk_id, seq_num, data):
+        """
+        :param chunk_id: ID của chunk
+        :param seq_num: Số thứ tự gói tin
+        :param data: Dữ liệu của gói tin
+        """
+        if not isinstance(data, bytes):
+            raise TypeError("data must be of type 'bytes'")
+        
+        self.chunk_id = chunk_id  # ID của chunk
+        self.seq_num = seq_num  # Số thứ tự của gói tin
+        self.data = data  # Dữ liệu của gói tin (bytes)
+        self.checksum = generate_checksum(data)  # Tính checksum
 
-def handle_request(data, addr, server_socket, file_list):
-    """Xử lý yêu cầu từ client."""
+    def serialize(self):
+        """
+        Chuyển đổi đối tượng ReliablePacket thành chuỗi JSON để gửi qua mạng.
+        """
+        return json.dumps({
+            'chunk_id': self.chunk_id,
+            'seq_num': self.seq_num,
+            'data': self.data.decode('latin-1'),  # Dữ liệu (bytes) chuyển thành string
+            'checksum': self.checksum
+        }).encode('utf-8')  # Mã hóa JSON thành bytes
+
+    @classmethod
+    def deserialize(cls, packet_bytes):
+        """
+        Giải mã từ bytes thành đối tượng ReliablePacket.
+        """
+        packet_dict = json.loads(packet_bytes.decode('utf-8'))  # Giải mã JSON từ bytes
+        return cls(
+            chunk_id=packet_dict['chunk_id'],
+            seq_num=packet_dict['seq_num'],
+            data=packet_dict['data'].encode('latin-1')  # Chuyển string về bytes
+        )
+
+
+
+
+
+# Hàm xử lý yêu cầu danh sách tệp từ client
+def handle_list_request(socket, addr):
+    # Lấy danh sách tệp từ file_list.txt
+    file_list_str = "\n".join([f"{name} {size}" for name, size in file_list.items()])  # Bao gồm cả kích thước
+    socket.sendto(file_list_str.encode(), addr)  # Gửi danh sách tệp cho client
+    logging.info(f"Sent file list to {addr}")
+
+
+def handle_download_request(socket, addr, data):
     try:
-        message = data.decode()
-        logging.info(f"Nhận yêu cầu từ {addr}: {message}")
+        request = data.decode().split("|")
+        _, filename, offset, size, seq_num, chunk_id = request
+        offset, size, seq_num, chunk_id = int(offset), int(size), int(seq_num), int(chunk_id)
 
-        if message == "LIST":
-            # Trả về danh sách file với thông tin chi tiết
-            response = "\n".join([f"{name} {details['size']} {details['checksum']}" for name, details in file_list.items()])
-            server_socket.sendto(response.encode(), addr)
+        file_path = os.path.join(FILES_DIR, filename)
+        if not os.path.exists(file_path):
+            socket.sendto(b"ERR_FILE_NOT_FOUND", addr)
+            return
+        if size <= 0:
+            raise ValueError(f"Invalid read size: {size}. Must be > 0 or -1.")
+        with open(file_path, "rb") as f:
+            f.seek(offset)
+            part_data = f.read(size)
+            if not part_data:
+                logging.warning(f"Read empty data for chunk_id={chunk_id}, offset={offset}, size={size}")
+                return 
+        if not isinstance(part_data, bytes):
+            raise TypeError("Data read from file is not in bytes format.")
 
-        elif message.startswith("DOWNLOAD"):
-            _, file_name, offset, chunk_size, part_num = message.split(":")
-            offset = int(offset)
-            chunk_size = int(chunk_size)
-            part_num = int(part_num)
+        packet = ReliablePacket(chunk_id=chunk_id, seq_num=seq_num, data=part_data)
 
-            if file_name in file_list:
-                file_path = os.path.join(SERVER_FILES_DIR, file_name)
-                with open(file_path, "rb") as f:
-                    f.seek(offset)
-                    chunk_data = f.read(chunk_size)
-
-                chunk_checksum = hashlib.md5(chunk_data).hexdigest()
-                total_packets = (len(chunk_data) + PACKET_SIZE - 1) // PACKET_SIZE
-                base_seq = part_num * 100
-
-                for seq in range(total_packets):
-                    start = seq * PACKET_SIZE
-                    end = min(start + PACKET_SIZE, len(chunk_data))
-                    packet_data = chunk_data[start:end]
-                    metadata = f"{base_seq + seq}|{total_packets}|{chunk_checksum}|".encode()
-                    packet = metadata + packet_data
-
-                    if not send_packet_with_ack(server_socket, packet, addr, base_seq + seq):
-                        logging.error(f"Không thể gửi packet {seq} trong chunk {part_num}.")
-                        return
-            else:
-                server_socket.sendto(b"ERROR: File not found", addr)
-
+        retries = 0
+        while retries < MAX_RETRIES:
+            try:
+                socket.sendto(packet.serialize(), addr)
+                ack_data, _ = socket.recvfrom(BUFFER_SIZE)
+                ack = ack_data.decode()
+                if ack == f"ACK_{chunk_id}_{seq_num}":
+                    logging.info(f"Successfully sent seq_num={seq_num} for chunk {chunk_id}")
+                    return
+                else:
+                    logging.warning(f"Incorrect ACK received: {ack}")
+                    retries += 1
+            except socket.timeout:
+                logging.warning(f"Timeout for seq_num={seq_num}, retrying...")
+                retries += 1
     except Exception as e:
-        logging.exception("Lỗi xử lý yêu cầu")
-        server_socket.sendto(f"ERROR: {str(e)}".encode(), addr)
+        logging.error(f"Error in handle_download_request: {e}")
 
 
-def handle_client_request(data, addr, server_socket, file_list):
-    thread = threading.Thread(target=handle_request, args=(data, addr, server_socket, file_list))
-    thread.start()
+def handle_client(port):
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_socket.bind((HOST, port))
 
+    logging.info(f"Server started on port {port}")
+
+    try:
+        while True:
+            data, addr = server_socket.recvfrom(BUFFER_SIZE)
+            request = data.decode().split("|")[0]
+
+            if request == "LIST":
+                handle_list_request(server_socket, addr)
+            elif request == "DOWNLOAD":
+                handle_download_request(server_socket, addr, data)
+            else:
+                logging.warning(f"Invalid request from {addr}")
+    except KeyboardInterrupt:
+        logging.info(f"Shutting down server on port {port}")
+    finally:
+        server_socket.close()
+
+threads = []
+# Khởi động server với nhiều cổng
 def start_server():
-    """Chạy server."""
-    while True:
-        file_list = load_file_list()
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        server_socket.bind((HOST, PORT))
-        logging.info(f"Server đang chạy tại {HOST}:{PORT}")
+    threads = []
+    for port in PORTS:
+        thread = threading.Thread(target=handle_client, args=(port,))
+        thread.start()
+        threads.append(thread)
 
-        try:
-            while True:
-                data, addr = server_socket.recvfrom(BUFFER_SIZE)
-                handle_client_request(data, addr, server_socket, file_list)
-        except KeyboardInterrupt:
-            logging.info("Server đã đóng.")
-            break
-        except Exception as e:
-            logging.exception("Lỗi trong server")
-        finally:
-            server_socket.close()
+    for thread in threads:
+        thread.join()
+
 
 if __name__ == "__main__":
     start_server()
+
+    #Danh sách các biến 
+# seq_num: Số thứ tự của mỗi gói tin (packet), giúp xác định vị trí của gói tin trong quá trình truyền tải dữ liệu.
+# file_list: Dictionary lưu trữ danh sách các tệp có sẵn trên server, với tên tệp là key và kích thước (byte) là value.
+# filename: Tên của tệp mà client yêu cầu tải.
+# server_address: Địa chỉ và cổng của server mà client sẽ kết nối.
+# file_path: Đường dẫn tuyệt đối đến tệp trên server mà client yêu cầu tải.
+# chunk_size: Kích thước của mỗi chunk (phần lớn của tệp) mà server chia tệp thành để gửi.
+# total_data: Dữ liệu của một chunk sau khi tất cả các phần của chunk được tải về từ tệp.
+# retries: Số lần thử lại nếu không nhận được ACK từ client khi gửi một phần dữ liệu.
+# current_part_size: Kích thước của phần dữ liệu hiện tại trong chunk, giúp chia nhỏ dữ liệu và gửi qua UDP.
+# part_offset: Vị trí offset cho mỗi phần nhỏ trong chunk, dùng để tính toán vị trí của phần trong tệp.
+# chunk_parts: Dictionary lưu trữ các phần nhỏ của chunk, với seq_num làm key và dữ liệu của phần đó làm value.
+# lock: Đối tượng đồng bộ hóa để đảm bảo không có nhiều luồng truy cập đồng thời vào chunk_parts.
+# request: Dữ liệu yêu cầu từ client, chứa thông tin về hành động mà client muốn thực hiện ("LIST" hoặc "DOWNLOAD").
+# client_socket: Socket UDP được sử dụng để giao tiếp với client, gửi và nhận gói tin.
+# part_size: Kích thước mỗi phần nhỏ trong chunk. Mỗi phần nhỏ sẽ được gửi qua UDP, đảm bảo không vượt quá giới hạn UDP.
+# file_size: Kích thước tệp mà server sẽ gửi cho client, được tính từ kích thước của tệp trong thư mục server.
+# is_last: Cờ để chỉ ra liệu đây có phải là phần cuối cùng của chunk hay không.
+# start_time: Thời gian bắt đầu để tính toán thời gian chờ (timeout) khi chờ nhận ACK từ client.
+# ack: Biến lưu trữ thông tin xác nhận (ACK) từ client, để xác nhận gói tin đã được nhận thành công.
+# part_num: Số thứ tự của phần trong chunk, giúp xác định vị trí của phần trong chuỗi các phần của chunk.
+# part_offset: Vị trí bắt đầu của phần trong chunk, giúp xác định chính xác vị trí phần dữ liệu trong tệp.
+
