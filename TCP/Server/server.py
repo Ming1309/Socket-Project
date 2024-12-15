@@ -32,6 +32,8 @@ def load_file_list():
                         file_size = float(file_size_str[:-2]) * 1024 * 1024
                     elif file_size_str.endswith("GB"):
                         file_size = float(file_size_str[:-2]) * 1024 * 1024 * 1024
+                    elif file_size_str.endswith("b"):
+                        file_size = float(file_size_str[:-1])
                     else:
                         logging.warning(f"Skipping line due to invalid file size format: {line.strip()}")
                         continue
@@ -60,7 +62,7 @@ def update_file_list():
             elif file_size_b >= 1024: 
                 size = f"{round(file_size_b / 1024, 2)}KB"
             else: 
-                size = f"{file_size_b}B"
+                size = f"{file_size_b}b"
             file_list[file_name] = size
         else:
             logging.warning(f"Skipping non-file item: {file_name}")
