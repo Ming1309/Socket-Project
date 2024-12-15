@@ -2,17 +2,18 @@ import socket
 import logging
 import threading
 import os
+import hashlib
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 
 # Server configuration
-HOST = socket.gethostbyname(socket.gethostname())
-PORT = 65432
+HOST = '0.0.0.0'
+PORT = 12345
 
 FILE_LIST_PATH = "file_list.txt"
 SERVER_FILES_DIR = "files"
-BUFFER_SIZE = 1024
+BUFFER_SIZE = 4096
 
 def load_file_list():
     """Load the list of available files from a TXT file."""
@@ -24,51 +25,22 @@ def load_file_list():
         for line in f:
             parts = line.strip().split()
             if len(parts) == 2:
-                file_name, file_size_str = parts
-                try:
-                    if file_size_str.endswith("KB"):
-                        file_size = float(file_size_str[:-2]) * 1024
-                    elif file_size_str.endswith("MB"):
-                        file_size = float(file_size_str[:-2]) * 1024 * 1024
-                    elif file_size_str.endswith("GB"):
-                        file_size = float(file_size_str[:-2]) * 1024 * 1024 * 1024
-                    elif file_size_str.endswith("b"):
-                        file_size = float(file_size_str[:-1])
-                    else:
-                        logging.warning(f"Skipping line due to invalid file size format: {line.strip()}")
-                        continue
-                    file_list[file_name] = int(file_size)
-                except ValueError:
-                    logging.warning(f"Skipping line due to invalid file size: {line.strip()}")
-                    continue
+                file_name, file_size = parts
+                file_list[file_name] = int(file_size)
     return file_list
 
 def update_file_list():
-    # Ensure the directory exists
     if not os.path.exists(SERVER_FILES_DIR):
         os.makedirs(SERVER_FILES_DIR)
     file_list = {}
 
-    # Iterate over files in the directory
     for file_name in os.listdir(SERVER_FILES_DIR):
         file_path = os.path.join(SERVER_FILES_DIR, file_name)
         if os.path.isfile(file_path):
-            file_size_b = os.path.getsize(file_path)
-            # Determine the most appropriate size unit
-            if file_size_b >= 1024 * 1024 * 1024:  
-                size = f"{round(file_size_b / (1024 * 1024 * 1024), 2)}GB"
-            elif file_size_b >= 1024 * 1024:  
-                size = f"{round(file_size_b / (1024 * 1024), 2)}MB"
-            elif file_size_b >= 1024: 
-                size = f"{round(file_size_b / 1024, 2)}KB"
-            else: 
-                size = f"{file_size_b}b"
-            file_list[file_name] = size
+            file_list[file_name] = os.path.getsize(file_path)
         else:
             logging.warning(f"Skipping non-file item: {file_name}")
-
     try:
-        # Write to the file
         with open(FILE_LIST_PATH, "w") as f:
             for file_name, file_size in file_list.items():
                 f.write(f"{file_name} {file_size}\n")
@@ -77,14 +49,22 @@ def update_file_list():
         logging.error(f"Error writing to {FILE_LIST_PATH}: {e}")
     return file_list
 
-def send_chunk(client_socket, file_name, offset, chunk_size):
+def calculate_file_checksum(file_path):
+    """Calculate file checksum"""
+    try:
+        with open(file_path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except Exception as e:
+        print(f"Error calculating checksum: {e}")
+        return None
+
+def send_chunk(client_socket, file_path, offset, chunk_size):
     """Send a chunk of data from a file to a client over a socket connection."""
     try:
-        with open(file_name, "rb") as f:
+        with open(file_path, "rb") as f:
             f.seek(offset)
             data = f.read(chunk_size)
-        header = f"{offset}:{len(data)}\n".encode()
-        client_socket.sendall(header + data)
+        client_socket.sendall(data)
     except Exception as e:
         logging.error(f"Error sending chunk: {e}")
         try:
@@ -102,11 +82,22 @@ def handle_client(client_socket, address):
                 if not request:
                     break
                 logging.info(f"Received request: {request}")
+
                 if request == "LIST":
                     file_list = load_file_list()
                     response = "\n".join([f"{name} {size}" for name, size in file_list.items()])
                     logging.info(f"Sending file list: {response}")
                     client_socket.sendall(response.encode())
+
+                elif request.startswith("CHECKSUM"):
+                    _, file_name = request.split(":")
+                    file_path = os.path.join(SERVER_FILES_DIR, file_name)
+                    if os.path.exists(file_path):
+                        checksum = calculate_file_checksum(file_path)
+                        client_socket.sendall(checksum.encode())
+                    else:
+                        client_socket.sendall(b"ERROR: File not found")
+
                 elif request.startswith("DOWNLOAD"):
                     try:
                         _, file_name, offset, chunk_size = request.split(":")
@@ -152,9 +143,9 @@ def start_server():
             server_socket.listen()
             logging.info(f"Server listening on {HOST}:{PORT}")
             while True:
-                conn, addr = server_socket.accept()
+                client_socket, addr = server_socket.accept()
                 logging.info(f"Connection from {addr}")
-                threading.Thread(target=handle_client, args=(conn, addr)).start()
+                threading.Thread(target=handle_client, args=(client_socket, addr)).start()
         except Exception as e:
             logging.error(f"Error in server: {e}.")
         except KeyboardInterrupt:
