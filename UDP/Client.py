@@ -11,7 +11,7 @@ from tqdm import tqdm
 # Cấu hình client
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 65432
-SERVER_PORTS = [54000, 55000, 56000, 57000]  # Danh sách các cổng
+SERVER_PORTS = [53000, 55000, 56000, 57000]  # Danh sách các cổng
 BUFFER_SIZE = 65535  # Giới hạn tối đa cho một gói UDP
 DOWNLOAD_FOLDER = "downloads"
 INPUT_FILE = "input.txt"
