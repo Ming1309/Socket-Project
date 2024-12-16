@@ -7,7 +7,7 @@ import threading
 
 # Cấu hình cho server
 HOST = "127.0.0.1"  # Địa chỉ IP của server
-PORTS = [54000, 55000, 56000, 57000]  # Danh sách các cổng
+PORTS = [53000, 55000, 56000, 57000]  # Danh sách các cổng
 BUFFER_SIZE = 65535  # Giới hạn tối đa cho một gói UDP
 FILE_LIST_PATH = "file_list.txt"  # Đường dẫn tới file chứa danh sách tệp
 FILES_DIR = "files"  # Thư mục chứa các tệp
