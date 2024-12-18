@@ -1,29 +1,26 @@
-import socket
 import os
+import json 
+import time 
+import socket
 import logging
 import hashlib
 import threading
-import json 
-import time 
 from tqdm import tqdm  
 
-
-# Cấu hình client
-SERVER_HOST = "127.0.0.1"
+# Configuration
+SERVER_HOST = socket.gethostbyname(socket.gethostname())
 SERVER_PORT = 65432
-SERVER_PORTS = [53000, 55000, 56000, 57000]  # Danh sách các cổng
-BUFFER_SIZE = 65535  # Giới hạn tối đa cho một gói UDP
+SERVER_PORTS = [54000, 55000, 56000, 57000]
+BUFFER_SIZE = 65535 
 DOWNLOAD_FOLDER = "downloads"
 INPUT_FILE = "input.txt"
-MAX_RETRIES = 2
 TIMEOUT = 2
 
-# Thiết lập logging
+# Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-#Hàm tính checksum
 def generate_checksum(data):
-    """Sinh checksum bằng SHA-256"""
+    """Generate checksum using SHA-256"""
     sha256 = hashlib.sha256()
     sha256.update(data)
     return sha256.hexdigest()
@@ -31,48 +28,53 @@ def generate_checksum(data):
 class ReliablePacket:
     def __init__(self, chunk_id, seq_num, data):
         """
-        :param chunk_id: ID của chunk
-        :param seq_num: Số thứ tự gói tin
-        :param data: Dữ liệu của gói tin
+        Initializes a ReliablePacket instance.
+        :param chunk_id: ID of chunk
+        :param seq_num: Sequence number of the packet
+        :param data: Data of the packet
         """
         if not isinstance(data, bytes):
             raise TypeError("data must be of type 'bytes'")
         
-        self.chunk_id = chunk_id  # ID của chunk
-        self.seq_num = seq_num  # Số thứ tự của gói tin
-        self.data = data  # Dữ liệu của gói tin (bytes)
-        self.checksum = generate_checksum(data)  # Tính checksum
+        self.chunk_id = chunk_id  
+        self.seq_num = seq_num 
+        self.data = data 
+        self.checksum = generate_checksum(data)
 
     def serialize(self):
-        """
-        Chuyển đổi đối tượng ReliablePacket thành chuỗi JSON để gửi qua mạng.
-        """
+        """Serializes the ReliablePacket instance into a JSON string.
+        
+        :return: JSON string representation of the packet, encoded as bytes"""
         return json.dumps({
             'chunk_id': self.chunk_id,
             'seq_num': self.seq_num,
-            'data': self.data.decode('latin-1'),  # Dữ liệu (bytes) chuyển thành string
+            'data': self.data.decode('latin-1'), 
             'checksum': self.checksum
-        }).encode('utf-8')  # Mã hóa JSON thành bytes
+        }).encode('utf-8')  
 
     @classmethod
     def deserialize(cls, packet_bytes):
         """
-        Giải mã từ bytes thành đối tượng ReliablePacket.
+        Deserializes bytes into a ReliablePacket instance.
+
+        :param packet_bytes: Bytes representation of the packet
+        :return: ReliablePacket instance
         """
-        packet_dict = json.loads(packet_bytes.decode('utf-8'))  # Giải mã JSON từ bytes
+        packet_dict = json.loads(packet_bytes.decode('utf-8'))  
         return cls(
             chunk_id=packet_dict['chunk_id'],
             seq_num=packet_dict['seq_num'],
-            data=packet_dict['data'].encode('latin-1')  # Chuyển string về bytes
+            data=packet_dict['data'].encode('latin-1')  
         )
 
 
 def download_chunk(filename, chunk_id, offset, chunk_size, server_port):
+    """Downloads a chunk of a file."""
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client_socket.settimeout(TIMEOUT)
     server_address = (SERVER_HOST, server_port)
     seq_num = offset
-    conditionStop = offset + chunk_size  # Sửa chỗ này
+    conditionStop = offset + chunk_size 
     progress_bar = tqdm(total=chunk_size, desc=f"Chunk {chunk_id}", unit="B", unit_scale=True, leave=False)
 
     try:
@@ -85,14 +87,13 @@ def download_chunk(filename, chunk_id, offset, chunk_size, server_port):
                 try:
                     response, _ = client_socket.recvfrom(BUFFER_SIZE)
                     packet = ReliablePacket.deserialize(response)
-                    #logging.info(f"Client received chunk_id={packet.chunk_id}, seq_num={packet.seq_num}")
                     if packet.chunk_id == chunk_id and packet.seq_num == seq_num:
                         if packet.checksum == generate_checksum(packet.data):
                             file.write(packet.data)
                             client_socket.sendto(f"ACK_{chunk_id}_{seq_num}".encode(), server_address)
                             seq_num += 1
                             offset += part_size
-                            progress_bar.update(part_size)  # Cập nhật tiến trình
+                            progress_bar.update(part_size) 
                         else:
                             logging.warning(f"Checksum mismatch for chunk {chunk_id}, seq_num {seq_num}")
                             client_socket.sendto(f"NACK_{chunk_id}_{seq_num}".encode(), server_address)
@@ -101,10 +102,11 @@ def download_chunk(filename, chunk_id, offset, chunk_size, server_port):
     except Exception as e:
         logging.error(f"Error in download_chunk: {e}")
     finally:
-        progress_bar.close()  # Đóng thanh tiến trình
+        progress_bar.close()  
         client_socket.close()
 
 def download_file(file_list, filename):
+    """Manages the file download."""
     file_size = file_list[filename]
     chunk_size = file_size // 4
     threads = []
@@ -137,8 +139,8 @@ def download_file(file_list, filename):
         print(f" Tải file {filename} thành công!\n")
         print()
 
-#Hàm yêu cầu danh sách 
 def request_file_list():
+    """Retrieve the list of available files from the server and display this information."""
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (SERVER_HOST, SERVER_PORTS[0])
     client_socket.settimeout(TIMEOUT)
@@ -155,23 +157,6 @@ def request_file_list():
     finally:
         client_socket.close()
 
-#Hàm đọc file input.txt
-def read_input_file(input_file=INPUT_FILE):
-    """Đọc các tên tệp từ file input.txt và trả về danh sách các tệp"""
-    file_list = []
-    try:
-        with open(input_file, 'r') as f:
-            for line in f:
-                filename = line.strip()  # Lọc bỏ khoảng trắng thừa
-                if filename:  # Nếu tên tệp không rỗng
-                    file_list.append(filename)
-        logging.info(f"Đã đọc {len(file_list)} tệp từ {input_file}.")
-    except FileNotFoundError:
-        logging.error(f"Không tìm thấy tệp {input_file}.")
-    except Exception as e:
-        logging.error(f"Lỗi khi đọc {input_file}: {e}")
-    return file_list
-
 def read_input_file():
     try:
         with open(INPUT_FILE, "r") as f:
@@ -179,23 +164,8 @@ def read_input_file():
     except FileNotFoundError:
         return []
 
-def main():
-    file_list = request_file_list()
-    print("\nDanh sách file từ server:")
-    for file_name, size in file_list .items():
-        print(f" * {file_name} {size}B")
-    print()
-    files_to_download = read_input_file()
-
-    for filename in files_to_download:
-        if filename in file_list:
-            download_file(file_list, filename)
-        else:
-            logging.warning(f"File {filename} not found on server.")
 def main(): 
-    # Tạo danh sách các tệp đã tải để kiểm tra trùng lặp
     downloaded_files = set()
-    # Lấy danh sách file từ server
     file_list = request_file_list()
     print("\nDanh sách file từ server:")
     for file_name, size in file_list.items():
@@ -203,54 +173,24 @@ def main():
     print()
     while True:
         try:
-           
-            # Đọc danh sách từ input.txt
             files_to_download = read_input_file()
 
             for filename in files_to_download:
-                # Nếu tệp đã tải, bỏ qua
                 if filename in downloaded_files:
-                    #logging.info(f"File {filename} đã được tải trước đó. Bỏ qua.")
                     continue
                 
-                # Nếu tệp có trong danh sách server, tiến hành tải
                 if filename in file_list:
                     download_file(file_list, filename)
-                    downloaded_files.add(filename)  # Đánh dấu tệp là đã tải
+                    downloaded_files.add(filename)  
                 else:
-                    logging.warning(f"File {filename} không có trên server. Bỏ qua.")
+                    logging.warning(f"File {filename} is not on the server. Skipping...")
             
-            # Sau khi hoàn tất danh sách hiện tại, chờ 5 giây và kiểm tra lại
-            logging.info("Hoàn tất danh sách hiện tại. Đợi 5 giây trước khi kiểm tra lại...")
+            logging.info("Complete the current list. Wait 5 seconds before checking again...")
             time.sleep(5)
 
         except KeyboardInterrupt:
-            logging.info("Client đã dừng hoạt động.")
+            logging.info("Client shut down gracefully.")
             break
 
 if __name__ == "__main__":
     main()
-
-
- #Danh sách các biến
-# seq_num: Số thứ tự của mỗi gói tin, giúp xác định vị trí của gói tin trong quá trình truyền tải.
-# chunk_id: ID của mỗi chunk (phần lớn của tệp), được chia thành các phần nhỏ hơn.
-# part_num: Số thứ tự của mỗi phần nhỏ trong chunk.
-# offset: Vị trí bắt đầu của mỗi phần trong chunk.
-# chunk_size: Kích thước mỗi chunk (tệp chia thành các chunk).
-# total_data: Dữ liệu của một chunk, lưu trữ sau khi tất cả các phần của chunk được tải.
-# retries: Số lần thử lại khi không nhận được dữ liệu.
-# current_part_size: Kích thước phần dữ liệu hiện tại trong chunk.
-# part_offset: Vị trí của phần trong chunk.
-# chunk_parts: Dictionary lưu trữ các phần nhỏ của chunk, với seq_num làm key.
-# lock: Đối tượng đồng bộ hóa để tránh truy cập đồng thời vào chunk_parts từ nhiều luồng.
-# file_list: Danh sách các tệp từ server, bao gồm tên và kích thước tệp.
-# filename: Tên tệp hiện tại đang được tải.
-# server_address: Địa chỉ của server (IP và cổng).
-# client_socket: Socket UDP để giao tiếp với server.
-# input_file: Tệp chứa danh sách các tệp cần tải.
-# part_size: Kích thước mỗi phần nhỏ trong chunk (ví dụ: 1KB hoặc 4KB).
-# MAX_RETRIES: Số lần thử lại nếu có lỗi trong quá trình tải.
-# TIMEOUT: Thời gian chờ tối đa trước khi thử lại hoặc báo lỗi.
-# DOWNLOAD_FOLDER: Thư mục để lưu trữ các tệp đã tải.
-# INPUT_FILE: Tệp chứa danh sách tệp cần tải từ server.
