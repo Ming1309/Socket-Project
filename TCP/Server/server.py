@@ -84,7 +84,10 @@ def handle_client(client_socket, address):
             try:
                 if request == "LIST":
                     file_list = load_file_list()
-                    response = "\n".join([f"{name} {size}" for name, size in file_list.items()])
+                    if file_list:
+                        response = "\n".join([f"{name} {size}" for name, size in file_list.items()])
+                    else:
+                        response = "NO_FILES_AVAILABLE"
                     client_socket.sendall(response.encode())
 
                 elif request.startswith("CHECKSUM"):
