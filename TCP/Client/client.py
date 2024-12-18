@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import socket
 import logging
@@ -24,11 +25,12 @@ def list_files():
             client_socket.connect((SERVER_HOST, SERVER_PORT))
             client_socket.sendall(b"LIST")
             response = client_socket.recv(BUFFER_SIZE).decode()
-            print("Available files on the server:")
-            if response:
-                print(response)
+            if response == "NO_FILES_AVAILABLE":
+                print("No files available on the server.")
+                sys.exit(0)
             else:
-                print("No files available.")
+                print("Available files on the server:")
+                print(response)
     except ConnectionRefusedError:
         logging.error("Error retrieving file list: Connection refused.")
     except Exception as e:
