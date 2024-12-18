@@ -4,15 +4,18 @@ import hashlib
 import json
 import logging
 import threading 
+import signal
+import sys
 
 # Cấu hình cho server
 HOST = "127.0.0.1"  # Địa chỉ IP của server
-PORTS = [53000, 55000, 56000, 57000]  # Danh sách các cổng
+PORTS = [54000, 55000, 56000, 57000]  # Danh sách các cổng
 BUFFER_SIZE = 65535  # Giới hạn tối đa cho một gói UDP
 FILE_LIST_PATH = "file_list.txt"  # Đường dẫn tới file chứa danh sách tệp
 FILES_DIR = "files"  # Thư mục chứa các tệp
 MAX_RETRIES = 15  # Số lần thử lại tối đa
-TIMEOUT = 2  # Thời gian chờ tối đa trong giây
+TIMEOUT = 2  # Thời gian chờ tối đa (giây)
+stop_event = threading.Event()
 
 # Cấu hình logging để ghi lại thông tin hoạt động của server
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,11 +26,31 @@ def load_file_list():
     try:
         with open(FILE_LIST_PATH, "r") as f:
             for line in f.readlines():
-                name, size = line.strip().split()  # Tách tên tệp và kích thước
+                name, size = line.strip().split() 
                 file_list[name] = int(size)
         logging.info(f"Loaded file list: {file_list}")
     except FileNotFoundError:
         logging.error("File list not found.")
+    return file_list
+
+def update_file_list():
+    if not os.path.exists(FILES_DIR):
+        os.makedirs(FILES_DIR)
+    file_list = {}
+
+    for file_name in os.listdir(FILES_DIR):
+        file_path = os.path.join(FILES_DIR, file_name)
+        if os.path.isfile(file_path):
+            file_list[file_name] = os.path.getsize(file_path)
+        else:
+            logging.warning(f"Skipping non-file item: {file_name}")
+    try:
+        with open(FILE_LIST_PATH, "w") as f:
+            for file_name, file_size in file_list.items():
+                f.write(f"{file_name} {file_size}\n")
+        logging.info(f"File list successfully updated in {FILE_LIST_PATH}")
+    except Exception as e:
+        logging.error(f"Error writing to {FILE_LIST_PATH}: {e}")
     return file_list
 
 # Tải danh sách tệp khi server khởi động
@@ -77,10 +100,6 @@ class ReliablePacket:
             seq_num=packet_dict['seq_num'],
             data=packet_dict['data'].encode('latin-1')  # Chuyển string về bytes
         )
-
-
-
-
 
 # Hàm xử lý yêu cầu danh sách tệp từ client
 def handle_list_request(socket, addr):
@@ -139,32 +158,48 @@ def handle_client(port):
     logging.info(f"Server started on port {port}")
 
     try:
-        while True:
-            data, addr = server_socket.recvfrom(BUFFER_SIZE)
-            request = data.decode().split("|")[0]
+        while not stop_event.is_set():
+            server_socket.settimeout(1)  # Set a timeout to avoid hanging
+            try:
+                data, addr = server_socket.recvfrom(BUFFER_SIZE)
+                request = data.decode().split("|")[0]
 
-            if request == "LIST":
-                handle_list_request(server_socket, addr)
-            elif request == "DOWNLOAD":
-                handle_download_request(server_socket, addr, data)
-            else:
-                logging.warning(f"Invalid request from {addr}")
-    except KeyboardInterrupt:
-        logging.info(f"Shutting down server on port {port}")
+                if request == "LIST":
+                    handle_list_request(server_socket, addr)
+                elif request == "DOWNLOAD":
+                    handle_download_request(server_socket, addr, data)
+                else:
+                    logging.warning(f"Invalid request from {addr}")
+            except socket.timeout:
+                continue
+    except Exception as e:
+        logging.error(f"Error handling client on port {port}: {e}")
     finally:
         server_socket.close()
 
-threads = []
+def signal_handler(sig, frame):
+    logging.info("Interrupt received, shutting down...")
+    stop_event.set()
+    sys.exit(0)
+
 # Khởi động server với nhiều cổng
 def start_server():
+    signal.signal(signal.SIGINT, signal_handler)
+    update_file_list()
     threads = []
-    for port in PORTS:
-        thread = threading.Thread(target=handle_client, args=(port,))
-        thread.start()
-        threads.append(thread)
+    try:
+        for port in PORTS:
+            thread = threading.Thread(target=handle_client, args=(port,))
+            thread.daemon = True
+            thread.start()
+            threads.append(thread)
 
-    for thread in threads:
-        thread.join()
+        for thread in threads:
+            thread.join()
+    except KeyboardInterrupt:
+        logging.info("Server interrupted by user.")
+    finally:
+        logging.info("Server shut down gracefully.")
 
 
 if __name__ == "__main__":
@@ -192,4 +227,3 @@ if __name__ == "__main__":
 # ack: Biến lưu trữ thông tin xác nhận (ACK) từ client, để xác nhận gói tin đã được nhận thành công.
 # part_num: Số thứ tự của phần trong chunk, giúp xác định vị trí của phần trong chuỗi các phần của chunk.
 # part_offset: Vị trí bắt đầu của phần trong chunk, giúp xác định chính xác vị trí phần dữ liệu trong tệp.
-
