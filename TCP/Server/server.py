@@ -1,11 +1,11 @@
+import os
 import socket
 import logging
 import threading
-import os
 import hashlib
 
 # Setup basic logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Server configuration
 HOST = socket.gethostbyname(socket.gethostname())
@@ -77,16 +77,14 @@ def handle_client(client_socket, address):
     logging.info(f"Connected by {address}")
     try:
         while True:
+            request = client_socket.recv(BUFFER_SIZE).decode()
+            if not request:
+                break
+            logging.info(f"Received request from {address}: {request}")
             try:
-                request = client_socket.recv(BUFFER_SIZE).decode()
-                if not request:
-                    break
-                logging.info(f"Received request: {request}")
-
                 if request == "LIST":
                     file_list = load_file_list()
                     response = "\n".join([f"{name} {size}" for name, size in file_list.items()])
-                    logging.info(f"Sending file list: {response}")
                     client_socket.sendall(response.encode())
 
                 elif request.startswith("CHECKSUM"):
@@ -99,33 +97,32 @@ def handle_client(client_socket, address):
                         client_socket.sendall(b"ERROR: File not found")
 
                 elif request.startswith("DOWNLOAD"):
-                    try:
-                        _, file_name, offset, chunk_size = request.split(":")
-                        offset = int(offset)
-                        chunk_size = int(chunk_size)
+                    _, file_name, offset, chunk_size = request.split(":")
+                    offset = int(offset)
+                    chunk_size = int(chunk_size)
 
-                        file_path = os.path.join(SERVER_FILES_DIR, file_name)
-                        if not os.path.exists(file_path):
-                            client_socket.sendall(b"ERROR: File not found")
-                            logging.warning(f"File not found: {file_path}")
-                            continue
+                    file_path = os.path.join(SERVER_FILES_DIR, file_name)
+                    if not os.path.exists(file_path):
+                        client_socket.sendall(b"ERROR: File not found")
+                        logging.warning(f"File not found: {file_path}")
+                        continue
 
-                        send_chunk(client_socket, file_path, offset, chunk_size)
-                        logging.info(f"Sent chunk of file {file_name} to client")
-                    except ValueError:
-                        client_socket.sendall(b"ERROR: Invalid request format")
-                        logging.error("Invalid request format")
+                    send_chunk(client_socket, file_path, offset, chunk_size)
+                    logging.info(f"Sent chunk of file {file_name} to client")
                 else:
                     client_socket.sendall(b"ERROR: Unknown request")
-                    logging.error("Unknown request")
-            except socket.error as e:
-                if e.errno == 54:  # Connection reset by peer
-                    logging.error(f"Connection reset by peer: {address}")
-                    break
-                else:
-                    raise
+                    logging.error(f"Unknown request from {address}: {request}")
+            except ValueError as ve:
+                client_socket.sendall(b"ERROR: Invalid request format")
+                logging.error(f"ValueError while handling request from {address}: {ve}")
+            except Exception as e:
+                client_socket.sendall(b"ERROR: Internal server error")
+                logging.error(f"Exception while handling request from {address}: {e}")
+
+    except socket.error as e:
+        logging.error(f"Socket error from {address}: {e}")
     except Exception as e:
-        logging.error(f"Error handling client {address}: {e}")
+        logging.error(f"Unexpected error from {address}: {e}")
     finally:
         try:
             client_socket.close()
@@ -135,7 +132,7 @@ def handle_client(client_socket, address):
 
 def start_server():
     """Start the server to handle client connections."""
-    logging.info("[STARTING] Server is starting.")
+    logging.info("Server is starting.")
     update_file_list()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         try:
