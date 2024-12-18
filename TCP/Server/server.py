@@ -3,6 +3,7 @@ import socket
 import logging
 import threading
 import hashlib
+import signal
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -14,6 +15,15 @@ PORT = 12345
 FILE_LIST_PATH = "file_list.txt"
 SERVER_FILES_DIR = "files"
 BUFFER_SIZE = 4096
+
+# To gracefully stop the server
+server_running = True
+
+def signal_handler(sig, frame):
+    """Handle interrupt signal to shut down the server gracefully."""
+    global server_running
+    logging.info("Signal received. Shutting down the server...")
+    server_running = False
 
 def load_file_list():
     """Load the list of available files from a TXT file."""
@@ -76,7 +86,7 @@ def handle_client(client_socket, address):
     """Handle requests from a client."""
     logging.info(f"Connected by {address}")
     try:
-        while True:
+        while server_running:
             request = client_socket.recv(BUFFER_SIZE).decode()
             if not request:
                 break
@@ -135,6 +145,7 @@ def handle_client(client_socket, address):
 
 def start_server():
     """Start the server to handle client connections."""
+    global server_running
     logging.info("Server is starting.")
     update_file_list()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
@@ -142,17 +153,20 @@ def start_server():
             server_socket.bind((HOST, PORT))
             server_socket.listen()
             logging.info(f"Server listening on {HOST}:{PORT}")
-            while True:
-                client_socket, addr = server_socket.accept()
-                logging.info(f"Connection from {addr}")
-                threading.Thread(target=handle_client, args=(client_socket, addr)).start()
+            while server_running:
+                try:
+                    server_socket.settimeout(1.0)  # Prevent blocking during shutdown
+                    client_socket, addr = server_socket.accept()
+                    logging.info(f"Connection from {addr}")
+                    threading.Thread(target=handle_client, args=(client_socket, addr)).start()
+                except socket.timeout:
+                    continue
         except Exception as e:
             logging.error(f"Error in server: {e}.")
-        except KeyboardInterrupt:
-            logging.info("Server interrupted by user.")
         finally:
             server_socket.close()
             logging.info("Server socket closed.")
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
     start_server()
