@@ -10,7 +10,7 @@ from tqdm import tqdm
 # Configuration
 SERVER_HOST = socket.gethostbyname(socket.gethostname())
 SERVER_PORT = 65432
-SERVER_PORTS = [54000, 55000, 56000, 57000]
+SERVER_PORTS = [54000, 55000, 56000, 57000, 58000]
 BUFFER_SIZE = 65535 
 DOWNLOAD_FOLDER = "downloads"
 INPUT_FILE = "input.txt"
@@ -142,12 +142,15 @@ def download_file(file_list, filename):
 def request_file_list():
     """Retrieve the list of available files from the server and display this information."""
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_address = (SERVER_HOST, SERVER_PORTS[0])
+    server_address = (SERVER_HOST, SERVER_PORTS[4]) # Gửi cho port chỉ phụ trách việc xử lý yêu cầu list
     client_socket.settimeout(TIMEOUT)
 
     try:
         client_socket.sendto("LIST".encode(), server_address)
         response, _ = client_socket.recvfrom(BUFFER_SIZE)
+        if response == b"Server is busy. Try again later.": #Tao thêm chỗ này 
+            print("Server is busy. Please try again later.")
+            return None  # Trả về None nếu server đang bận
         file_list_str = response.decode()
         file_list = {line.split()[0]: int(line.split()[1]) for line in file_list_str.split("\n") if line.strip()}
         return file_list
@@ -164,9 +167,22 @@ def read_input_file():
     except FileNotFoundError:
         return []
 
+def send_disconnect():#Gửi tín hiệu đóng kết nối 
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_address = (SERVER_HOST, SERVER_PORTS[0])
+    client_socket.settimeout(TIMEOUT)
+    try:
+        client_socket.sendto(b"DISCONNECT", (SERVER_HOST, SERVER_PORTS[0]))
+        logging.info("Sent DISCONNECT request to server.")
+    except Exception as e:
+        logging.error(f"Error sending DISCONNECT: {e}")
+
 def main(): 
     downloaded_files = set()
     file_list = request_file_list()
+    if file_list == None:
+        return
+
     print("\nDanh sách file từ server:")
     for file_name, size in file_list.items():
         print(f" * {file_name} {size}B")
@@ -190,6 +206,7 @@ def main():
 
         except KeyboardInterrupt:
             logging.info("Client shut down gracefully.")
+            send_disconnect()
             break
 
 if __name__ == "__main__":
