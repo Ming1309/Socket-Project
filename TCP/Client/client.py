@@ -7,7 +7,7 @@ import threading
 from tqdm import tqdm
 
 # Configurations
-SERVER_HOST = '127.0.0.1'
+SERVER_HOST = socket.gethostbyname(socket.gethostname())
 SERVER_PORT = 12345
 BUFFER_SIZE = 1024
 INPUT_FILE = 'input.txt'
