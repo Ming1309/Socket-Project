@@ -17,7 +17,7 @@ FILES_DIR = "files"
 MAX_RETRIES = 15  
 TIMEOUT = 2  
 stop_event = threading.Event()
-OneClient = 0 #Biến xem thử có đang giao tiếp với ai không 
+OneClient = 0 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -113,7 +113,7 @@ def handle_list_request(socket, addr):
     """Processes a client's request to list the available files on the server"""
     global OneClient 
     if OneClient == 1:
-        socket.sendto(b"Server is busy. Try again later.", addr)  
+        socket.sendto(b"SERVER_IS_BUSY", addr)  
         return 
     else:
         OneClient = 1
@@ -227,27 +227,3 @@ def start_server():
 
 if __name__ == "__main__":
     start_server()
-
-
-    #Danh sách các biến 
-# seq_num: Số thứ tự của mỗi gói tin (packet), giúp xác định vị trí của gói tin trong quá trình truyền tải dữ liệu.
-# file_list: Dictionary lưu trữ danh sách các tệp có sẵn trên server, với tên tệp là key và kích thước (byte) là value.
-# filename: Tên của tệp mà client yêu cầu tải.
-# server_address: Địa chỉ và cổng của server mà client sẽ kết nối.
-# file_path: Đường dẫn tuyệt đối đến tệp trên server mà client yêu cầu tải.
-# chunk_size: Kích thước của mỗi chunk (phần lớn của tệp) mà server chia tệp thành để gửi.
-# total_data: Dữ liệu của một chunk sau khi tất cả các phần của chunk được tải về từ tệp.
-# retries: Số lần thử lại nếu không nhận được ACK từ client khi gửi một phần dữ liệu.
-# current_part_size: Kích thước của phần dữ liệu hiện tại trong chunk, giúp chia nhỏ dữ liệu và gửi qua UDP.
-# part_offset: Vị trí offset cho mỗi phần nhỏ trong chunk, dùng để tính toán vị trí của phần trong tệp.
-# chunk_parts: Dictionary lưu trữ các phần nhỏ của chunk, với seq_num làm key và dữ liệu của phần đó làm value.
-# lock: Đối tượng đồng bộ hóa để đảm bảo không có nhiều luồng truy cập đồng thời vào chunk_parts.
-# request: Dữ liệu yêu cầu từ client, chứa thông tin về hành động mà client muốn thực hiện ("LIST" hoặc "DOWNLOAD").
-# client_socket: Socket UDP được sử dụng để giao tiếp với client, gửi và nhận gói tin.
-# part_size: Kích thước mỗi phần nhỏ trong chunk. Mỗi phần nhỏ sẽ được gửi qua UDP, đảm bảo không vượt quá giới hạn UDP.
-# file_size: Kích thước tệp mà server sẽ gửi cho client, được tính từ kích thước của tệp trong thư mục server.
-# is_last: Cờ để chỉ ra liệu đây có phải là phần cuối cùng của chunk hay không.
-# start_time: Thời gian bắt đầu để tính toán thời gian chờ (timeout) khi chờ nhận ACK từ client.
-# ack: Biến lưu trữ thông tin xác nhận (ACK) từ client, để xác nhận gói tin đã được nhận thành công.
-# part_num: Số thứ tự của phần trong chunk, giúp xác định vị trí của phần trong chuỗi các phần của chunk.
-# part_offset: Vị trí bắt đầu của phần trong chunk, giúp xác định chính xác vị trí phần dữ liệu trong tệp.
