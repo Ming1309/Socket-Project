@@ -2,7 +2,6 @@ import os
 import socket
 import logging
 import threading
-import hashlib
 import signal
 
 # Setup basic logging
@@ -59,15 +58,6 @@ def update_file_list():
         logging.error(f"Error writing to {FILE_LIST_PATH}: {e}")
     return file_list
 
-def calculate_file_checksum(file_path):
-    """Calculate file checksum"""
-    try:
-        with open(file_path, "rb") as f:
-            return hashlib.md5(f.read()).hexdigest()
-    except Exception as e:
-        print(f"Error calculating checksum: {e}")
-        return None
-
 def send_chunk(client_socket, file_path, offset, chunk_size):
     """Send a chunk of data from a file to a client over a socket connection."""
     try:
@@ -99,15 +89,6 @@ def handle_client(client_socket, address):
                     else:
                         response = "NO_FILES_AVAILABLE"
                     client_socket.sendall(response.encode())
-
-                elif request.startswith("CHECKSUM"):
-                    _, file_name = request.split(":")
-                    file_path = os.path.join(SERVER_FILES_DIR, file_name)
-                    if os.path.exists(file_path):
-                        checksum = calculate_file_checksum(file_path)
-                        client_socket.sendall(checksum.encode())
-                    else:
-                        client_socket.sendall(b"ERROR: File not found")
 
                 elif request.startswith("DOWNLOAD"):
                     _, file_name, offset, chunk_size = request.split(":")
